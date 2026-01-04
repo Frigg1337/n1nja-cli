@@ -15,13 +15,13 @@ import hashlib
 import codecs
 import sqlite3
 import argparse
+import tempfile
+import math
 from typing import Optional, List, Tuple
 from collections import defaultdict
-
-from dotenv import load_dotenv
-from PIL import Image, ExifTags
-import json
-import time
+# Removed external dependencies for standalone usage
+# from dotenv import load_dotenv
+# from PIL import Image, ExifTags
 
 import logging
 
@@ -34,13 +34,13 @@ logging.basicConfig(
 logger = logging.getLogger("n1nja")
 
 # ---------------- Load konfigurasi ----------------
-load_dotenv()
+# load_dotenv() # Removed
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 USE_DCODE = os.getenv("USE_DCODE", "true").lower() == "true"
 PASTE_PROVIDER = os.getenv("PASTE_PROVIDER", "spaste")
 PASTE_EXPIRY = os.getenv("PASTE_EXPIRY", "1d")
 MAX_HISTORY_STORE = int(os.getenv("MAX_HISTORY_STORE", "1000") or 1000)
-DB_FILE = os.getenv("DB_FILE", "/tmp/n1nja.db")
+DB_FILE = os.getenv("DB_FILE", os.path.join(tempfile.gettempdir(), "n1nja.db"))
 DCODE_API = os.getenv("DCODE_API", "https://www.dcode.fr/api/")
 
 # ---------------- DB (SQLite safe) ----------------
@@ -127,19 +127,7 @@ def find_flags(text: str) -> List[str]:
     return found
 
 # ---------------- Binary helpers ----------------
-def extract_strings(data: bytes, min_len: int = 4) -> List[str]:
-    res = []
-    current = bytearray()
-    for b in data:
-        if 32 <= b < 127:
-            current.append(b)
-        else:
-            if len(current) >= min_len:
-                res.append(current.decode("utf-8", errors="ignore"))
-            current = bytearray()
-    if len(current) >= min_len:
-        res.append(current.decode("utf-8", errors="ignore"))
-    return res
+# String extraction removed (Forensics context)
 
 def hexdump(data: bytes, length=16) -> str:
     lines = []
@@ -250,25 +238,194 @@ def vigenere(text: str, key: str, decrypt=False) -> str:
             out += ch
     return out
 
-# ---------------- LSB stego ----------------
-def lsb_extract(img: Image.Image, bits=1, max_bytes=8192) -> bytes:
-    img = img.convert("RGB")
-    pixels = list(img.getdata())
-    bits_stream = []
-    for px in pixels:
-        for c in px:
-            bits_stream.append(c & ((1 << bits) - 1))
-    bits_flat = []
-    for val in bits_stream:
-        for b in range(bits - 1, -1, -1):
-            bits_flat.append((val >> b) & 1)
+# ---------------- Advanced Crypto ----------------
+MORSE_CODE_DICT = {
+    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
+    'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
+    'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
+    'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+    'Y': '-.--', 'Z': '--..', '1': '.----', '2': '..---', '3': '...--',
+    '4': '....-', '5': '.....', '6': '-....', '7': '--...', '8': '---..',
+    '9': '----.', '0': '-----', ',': '--..--', '.': '.-.-.-', '?': '..--..',
+    '/': '-..-.', '-': '-....-', '(': '-.--.', ')': '-.--.-', ' ': '/'
+}
+
+def morse_encode(text: str) -> str:
+    return ' '.join(MORSE_CODE_DICT.get(char.upper(), char) for char in text)
+
+def morse_decode(text: str) -> str:
+    # Reverse dictionary
+    REVERSE_DICT = {v: k for k, v in MORSE_CODE_DICT.items()}
+    return ''.join(REVERSE_DICT.get(code, code) for code in text.split(' '))
+
+def frequency_analysis(text: str) -> str:
+    # Filter only letters
+    letters = [c.upper() for c in text if c.isalpha()]
+    total = len(letters)
+    if total == 0:
+        return "No letters found."
+    
+    counts = defaultdict(int)
+    for c in letters:
+        counts[c] += 1
+    
+    # English frequency reference
+    # E T A O I N S H R D L C U M W F G Y P B V K J X Q Z
+    
+    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    
+    lines = [f"Total letters: {total}"]
+    for char, count in sorted_counts:
+        percent = (count / total) * 100
+        lines.append(f"{char}: {count} ({percent:.2f}%)")
+        
+    return "\n".join(lines)
+
+def rail_fence_cipher(text: str, key: int, mode='enc') -> str:
+    if key <= 1: return text
+    
+    # Create the matrix to probe for positions
+    rail = [['\n' for i in range(len(text))] for j in range(key)]
+    dir_down = False
+    row, col = 0, 0
+    
+    for i in range(len(text)):
+        if (row == 0) or (row == key - 1):
+            dir_down = not dir_down
+        
+        if mode == 'enc':
+            rail[row][col] = text[i]
+        else:
+            rail[row][col] = '*'
+            
+        col += 1
+        if dir_down: row += 1
+        else: row -= 1
+        
+    if mode == 'dec':
+        index = 0
+        for i in range(key):
+            for j in range(len(text)):
+                if ((rail[i][j] == '*') and (index < len(text))):
+                    rail[i][j] = text[index]
+                    index += 1
+                    
+    result = []
+    row, col = 0, 0
+    dir_down = False
+    for i in range(len(text)):
+        if (row == 0) or (row == key - 1):
+            dir_down = not dir_down
+            
+        if mode == 'enc':
+            if rail[row][col] != '\n':
+                result.append(rail[row][col])
+        else:
+            if rail[row][col] != '\n':
+                result.append(rail[row][col])
+                
+        col += 1
+        if dir_down: row += 1
+        else: row -= 1
+        
+    return("".join(result))
+
+def egcd(a, b):
+    if a == 0:
+        return (b, 0, 1)
+    else:
+        g, y, x = egcd(b % a, a)
+        return (g, x - (b // a) * y, y)
+
+def modinv(a, m):
+    g, x, y = egcd(a, m)
+    if g != 1:
+        raise Exception('Modular inverse does not exist')
+    else:
+        return x % m
+
+def rsa_calc(p, q, e):
+    n = p * q
+    phi = (p - 1) * (q - 1)
+    d = modinv(e, phi)
+    return n, phi, d
+
+def affine_cipher(text, a, b, mode='enc'):
+    if math.gcd(a, 26) != 1:
+        return "Error: 'a' must be coprime to 26."
+    
+    result = ""
+    m = 26
+    
+    if mode == 'dec':
+        a_inv = modinv(a, m)
+        
+    for char in text:
+        if char.isalpha():
+            base = ord('A') if char.isupper() else ord('a')
+            x = ord(char) - base
+            
+            if mode == 'enc':
+                new_x = (a * x + b) % m
+            else:
+                new_x = (a_inv * (x - b)) % m
+                
+            result += chr(new_x + base)
+        else:
+            result += char
+    return result
+
+def xor_repeating_key(data: bytes, key: bytes) -> bytes:
     out = bytearray()
-    for i in range(0, min(len(bits_flat), max_bytes * 8), 8):
-        byte = 0
-        for j in range(8):
-            byte = (byte << 1) | bits_flat[i + j]
-        out.append(byte)
-    return bytes(out).rstrip(b"\x00")
+    for i, b in enumerate(data):
+        k = key[i % len(key)]
+        out.append(b ^ k)
+    return bytes(out)
+
+BACON_DICT = {
+    'A': 'aaaaa', 'B': 'aaaab', 'C': 'aaaba', 'D': 'aaabb', 'E': 'aabaa',
+    'F': 'aabab', 'G': 'aabba', 'H': 'aabbb', 'I': 'abaaa', 'J': 'abaab',
+    'K': 'ababa', 'L': 'ababb', 'M': 'abbaa', 'N': 'abbab', 'O': 'abbba',
+    'P': 'abbbb', 'Q': 'baaaa', 'R': 'baaad', 'S': 'baaba', 'T': 'baabb',
+    'U': 'babaa', 'V': 'babab', 'W': 'babba', 'X': 'babbb', 'Y': 'bbaaa',
+    'Z': 'bbaab'
+}
+BACON_REV = {v: k for k, v in BACON_DICT.items()}
+
+def bacon_cipher(text, mode='enc'):
+    if mode == 'enc':
+        out = []
+        for c in text:
+            if c.upper() in BACON_DICT:
+                out.append(BACON_DICT[c.upper()])
+            else:
+                out.append(c)
+        return " ".join(out)
+    else:
+        # Simple parsing: remove non-ab characters or try to split
+        # This is a basic implementation assuming standard format
+        clean = text.lower().replace(" ", "")
+        out = ""
+        for i in range(0, len(clean), 5):
+            chunk = clean[i:i+5]
+            out += BACON_REV.get(chunk, "?")
+        return out
+
+def nums_to_ascii(text, base=10):
+    parts = text.replace(',', ' ').split()
+    out = ""
+    for p in parts:
+        try:
+            val = int(p, base)
+            out += chr(val)
+        except:
+            out += "?"
+    return out
+
+# ---------------- LSB stego ----------------
+# LSB stego (Disabled in standalone mode)
+# def lsb_extract(img, bits=1, max_bytes=8192) -> bytes:
+#     pass
 
 # ---------------- Auto decode recursive ----------------
 def auto_decode_recursive(data: bytes, max_depth=3) -> List[Tuple[str, bytes]]:
@@ -309,20 +466,8 @@ def auto_decode_recursive(data: bytes, max_depth=3) -> List[Tuple[str, bytes]]:
 # ---------------- Hash Identifier helpers ----------------
 def lookup_hash_local(hashtext: str) -> Optional[str]:
     """Use local hash identification as the only option."""
-    try:
-        from hashid import HashID
-        hid = HashID()
-        guesses = list(hid.identifyHash(hashtext))
-        if not guesses:
-            return None
-        lines = ["Local hash identifier:"]
-        for i, g in enumerate(guesses[:12]):
-            name = getattr(g, "name", None) or getattr(g, "title", None) or str(g)
-            lines.append(f"{i+1}. {name}")
-        return "\n".join(lines)
-    except Exception as e:
-        # Silently fail if hashid library is not available
-        pass
+    # Removed hashid library dependency for standalone usage
+    pass
 
     # Heuristic fallback
     s = re.sub(r'[^0-9a-fA-F]', '', hashtext)
@@ -520,81 +665,7 @@ def cmd_rot13(args):
     except Exception as e:
         print("ROT13 error: " + str(e))
 
-def cmd_strings(args):
-    """Function to extract strings from file"""
-    if not os.path.exists(args.file):
-        print("File not found.")
-        return
-
-    with open(args.file, 'rb') as f:
-        data = f.read()
-
-    hasil = extract_strings(data)
-    if not hasil:
-        print("No readable strings found.")
-        return
-
-    teks = "\n".join(hasil[:200])
-    print(teks)
-    save_history("cli_user", "strings", args.file, teks[:4000])
-
-def cmd_stego(args):
-    """Function for steganography analysis"""
-    if not os.path.exists(args.file):
-        print("File not found.")
-        return
-
-    with open(args.file, 'rb') as f:
-        data = f.read()
-
-    reply = []
-    try:
-        img = Image.open(io.BytesIO(data))
-        exif = None
-        try:
-            exif = img._getexif()
-        except Exception:
-            exif = None
-        if exif:
-            reply.append("EXIF detected:")
-            for k, v in exif.items():
-                name = ExifTags.TAGS.get(k, k)
-                reply.append("%s: %s" % (str(name), str(v)[:200]))
-        else:
-            reply.append("No EXIF.")
-
-        # LSB extraction
-        try:
-            lsb_data = lsb_extract(img)
-            if lsb_data:
-                lsb_text = lsb_data.decode("utf-8", errors="ignore")
-                if lsb_text:
-                    reply.append("\nLSB extracted text (first 800 chars):")
-                    reply.append(lsb_text[:800])
-            else:
-                reply.append("\nNo LSB data.")
-        except Exception as e:
-            reply.append("\nLSB extraction error: %s" % str(e))
-
-        # Strings from image
-        img_strings = extract_strings(data)
-        if img_strings:
-            reply.append("\nStrings (first 20):")
-            reply.extend(img_strings[:20])
-        else:
-            reply.append("\nNo strings found.")
-
-        # Hexdump
-        hd = hexdump(data)
-        reply.append("\nHexdump (first 50 lines):")
-        reply.append(hd)
-
-        out = "\n".join(reply)
-        print(out)
-        save_history("cli_user", "stego", args.file, out[:4000])
-
-    except Exception as e:
-        print("Stego error: %s" % str(e))
+# cmd_strings and cmd_stego removed to focus on Cryptography
 
 def cmd_fileinfo(args):
     """Function for file information"""
@@ -638,28 +709,154 @@ def cmd_hexdump(args):
     except Exception as e:
         print(f"Hexdump error: {str(e)}")
 
+def cmd_morse(args):
+    """Function for Morse code"""
+    try:
+        if args.mode == 'enc':
+            out = morse_encode(args.text)
+        else:
+            out = morse_decode(args.text)
+        print(out)
+        save_history("cli_user", "morse", args.mode + "|" + args.text, out)
+    except Exception as e:
+        print(f"Morse error: {str(e)}")
+
+def cmd_freq(args):
+    """Function for Frequency Analysis"""
+    try:
+        out = frequency_analysis(args.text)
+        print(out)
+        save_history("cli_user", "freq", args.text, out[:4000])
+    except Exception as e:
+        print(f"Freq error: {str(e)}")
+
+def cmd_railfence(args):
+    """Function for Rail Fence Cipher"""
+    try:
+        mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
+        out = rail_fence_cipher(args.text, args.rails, mode)
+        print(out)
+        save_history("cli_user", "railfence", f"{mode}|{args.rails}|{args.text}", out)
+    except Exception as e:
+        print(f"Railfence error: {str(e)}")
+
+def cmd_rsa(args):
+    """Function for RSA calc"""
+    try:
+        n, phi, d = rsa_calc(args.p, args.q, args.e)
+        print(f"p={args.p}, q={args.q}, e={args.e}")
+        print(f"n   = {n}")
+        print(f"phi = {phi}")
+        print(f"d   = {d} (Private Key)")
+        save_history("cli_user", "rsa", f"{args.p}|{args.q}|{args.e}", f"d={d}")
+    except Exception as e:
+        print(f"RSA error: {str(e)}")
+
+def cmd_math(args):
+    """Function for math helpers"""
+    try:
+        if args.op == 'gcd':
+            res = math.gcd(args.a, args.b)
+            print(f"GCD({args.a}, {args.b}) = {res}")
+        elif args.op == 'modinv':
+            res = modinv(args.a, args.b)
+            print(f"ModInv({args.a}, {args.b}) = {res}")
+    except Exception as e:
+        print(f"Math error: {str(e)}")
+
+def cmd_affine(args):
+    """Function for Affine cipher"""
+    try:
+        mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
+        out = affine_cipher(args.text, args.a, args.b, mode)
+        print(out)
+        save_history("cli_user", "affine", f"{mode}|{args.a}|{args.b}|{args.text}", out)
+    except Exception as e:
+        print(f"Affine error: {str(e)}")
+
+def cmd_xorkey(args):
+    """Function for Repeating Key XOR"""
+    try:
+        # Input data handling (hex/base64 auto detection)
+        if is_hex(args.data):
+            data_bytes = try_hex(args.data)
+        elif is_base64(args.data):
+             data_bytes = try_base64(args.data)
+        else:
+            data_bytes = args.data.encode()
+            
+        key_bytes = args.key.encode()
+        res = xor_repeating_key(data_bytes, key_bytes)
+        
+        # Display results in hex and string
+        print("Hex Output:")
+        print(res.hex())
+        print("\nString Preview:")
+        print(res.decode('utf-8', errors='ignore'))
+        
+        save_history("cli_user", "xorkey", args.key, res.hex())
+    except Exception as e:
+        print(f"XORKey error: {str(e)}")
+
+def cmd_bacon(args):
+    """Function for Bacon cipher"""
+    try:
+        mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
+        out = bacon_cipher(args.text, mode)
+        print(out)
+        save_history("cli_user", "bacon", f"{mode}|{args.text}", out)
+    except Exception as e:
+        print(f"Bacon error: {str(e)}")
+
+def cmd_num(args):
+    """Function for Number conversion"""
+    try:
+        if args.type == 'bin':
+            out = nums_to_ascii(args.text, 2)
+        elif args.type == 'dec':
+            out = nums_to_ascii(args.text, 10)
+        elif args.type == 'hex':
+            out = nums_to_ascii(args.text, 16)
+        print(out)
+        save_history("cli_user", "num", f"{args.type}|{args.text}", out)
+    except Exception as e:
+        print(f"Num error: {str(e)}")
+
 def show_help():
     """Display CLI help"""
     help_text = (
-        "n1nja - Cybersecurity & CTF Helper CLI\n\n"
-        "Available commands:\n"
-        "  decode <type> <text>    : Decode from various formats (base64, hex, base32, rot13, atbash)\n"
-        "  encode <type> <text>    : Encode to various formats (base64, hex, url)\n"
-        "  hashid <hashtext>       : Hash identification\n"
-        "  solve <text>            : Recursive auto-decode and flag detection\n"
-        "  xorbrute <data>         : Bruteforce single-byte XOR\n"
-        "  caesar <shift> <text>   : Caesar cipher\n"
-        "  vigenere <enc|dec> <key> <text> : Vigenere cipher\n"
-        "  atbash <text>           : Atbash cipher\n"
-        "  rot13 <text>            : ROT13\n"
-        "  strings <file>          : Extract strings from file\n"
-        "  stego <file>            : Steganography analysis (EXIF, LSB, strings, hexdump)\n"
-        "  fileinfo <file>         : File information (hash, size)\n"
-        "  hexdump <data>          : Display hexdump from hex/base64/string data\n\n"
-        "Usage examples:\n"
-        "  python n1nja_cli.py decode base64 SGVsbG8=\n"
-        "  python n1nja_cli.py hashid 5d41402abc4b2a76b9719d911017c592\n"
-        "  python n1nja_cli.py solve SGVsbG8gV29ybGQ=\n"
+        "Available Commands:\n"
+        "===================\n\n"
+        "[!] Encodings & Conversions\n"
+        "  decode    : Decode (base64, hex, base32, rot13, atbash)\n"
+        "  encode    : Encode (base64, hex, url)\n"
+        "  num       : Convert numbers to ASCII (bin, dec, hex)\n\n"
+        "[!] Classic Ciphers\n"
+        "  caesar    : Caesar Cipher (shift)\n"
+        "  rot13     : ROT13 Cipher (caesar 13)\n"
+        "  atbash    : Atbash Cipher (mirror)\n"
+        "  affine    : Affine Cipher (ax + b)\n"
+        "  vigenere  : Vigenere Cipher (polyalphabetic)\n"
+        "  railfence : Rail Fence Cipher (zigzag)\n"
+        "  bacon     : Bacon Cipher (stego text)\n"
+        "  morse     : Morse Code\n\n"
+        "[!] Modern Crypto & Math\n"
+        "  rsa       : RSA Calculator (p, q, e -> d)\n"
+        "  xorkey    : Repeating Key XOR\n"
+        "  xorbrute  : Single Byte XOR Bruteforce\n"
+        "  math      : Math Helpers (gcd, modinv)\n\n"
+        "[!] Analysis & Identifiers\n"
+        "  solve     : Auto-Solver (Recursive decode & flag detection)\n"
+        "  hashid    : Identify hash type\n"
+        "  freq      : Frequency Analysis\n"
+        "  fileinfo  : File Hash & Size Info\n"
+        "  hexdump   : Hexdump View\n\n"
+        "Usage Examples:\n"
+        "  n1nja solve \"SGVsbG8...\"\n"
+        "  n1nja rsa 61 53 17\n"
+        "  n1nja xorkey SECRET 120412...\n"
+        "  n1nja caesar 13 \"URYYB\"\n"
+        "  n1nja num dec \"104 101 108 108 111\"\n"
     )
     print(help_text)
 
@@ -678,7 +875,13 @@ def main():
     n1nja - Cybersecurity & CTF Helper
     """)
 
-    parser = argparse.ArgumentParser(description='n1nja - Cybersecurity & CTF Helper CLI')
+    # Check for help flags manually before argparse
+    if len(sys.argv) == 1 or '-h' in sys.argv or '--help' in sys.argv:
+        show_help()
+        sys.exit(0)
+
+    # Disable default help to avoid conflict
+    parser = argparse.ArgumentParser(description='n1nja - Cybersecurity & CTF Helper CLI', add_help=False)
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     # Decode command
@@ -722,14 +925,6 @@ def main():
     rot13_parser = subparsers.add_parser('rot13', help='ROT13')
     rot13_parser.add_argument('text', help='Text to process')
 
-    # Strings command
-    strings_parser = subparsers.add_parser('strings', help='Extract strings from file')
-    strings_parser.add_argument('file', help='File name to extract strings from')
-
-    # Stego command
-    stego_parser = subparsers.add_parser('stego', help='Steganography analysis')
-    stego_parser.add_argument('file', help='Image file name to analyze')
-
     # Fileinfo command
     fileinfo_parser = subparsers.add_parser('fileinfo', help='File information (hash, size)')
     fileinfo_parser.add_argument('file', help='File name to analyze')
@@ -737,6 +932,55 @@ def main():
     # Hexdump command
     hexdump_parser = subparsers.add_parser('hexdump', help='Display hexdump')
     hexdump_parser.add_argument('data', help='Data in hex, base64, or string format')
+
+    # Morse command
+    morse_parser = subparsers.add_parser('morse', help='Morse code')
+    morse_parser.add_argument('mode', choices=['enc', 'dec'], help='Encode or Decode')
+    morse_parser.add_argument('text', help='Text to process')
+
+    # Freq command
+    freq_parser = subparsers.add_parser('freq', help='Frequency analysis')
+    freq_parser.add_argument('text', help='Text to analyze')
+
+    # Railfence command
+    rail_parser = subparsers.add_parser('railfence', help='Rail fence cipher')
+    rail_parser.add_argument('mode', choices=['enc', 'dec'], help='Encode or Decode')
+    rail_parser.add_argument('rails', type=int, help='Number of rails')
+    rail_parser.add_argument('text', help='Text to process')
+
+    # RSA command
+    rsa_parser = subparsers.add_parser('rsa', help='RSA Calculator')
+    rsa_parser.add_argument('p', type=int, help='Prime p')
+    rsa_parser.add_argument('q', type=int, help='Prime q')
+    rsa_parser.add_argument('e', type=int, help='Public exponent e')
+
+    # Math command
+    math_parser = subparsers.add_parser('math', help='Math helpers')
+    math_parser.add_argument('op', choices=['gcd', 'modinv'], help='Operation')
+    math_parser.add_argument('a', type=int, help='Value A')
+    math_parser.add_argument('b', type=int, help='Value B (or modulus)')
+
+    # Affine command
+    affine_parser = subparsers.add_parser('affine', help='Affine cipher')
+    affine_parser.add_argument('mode', choices=['enc', 'dec'], help='Encode or Decode')
+    affine_parser.add_argument('a', type=int, help='Slope a')
+    affine_parser.add_argument('b', type=int, help='Intercept b')
+    affine_parser.add_argument('text', help='Text to process')
+
+    # XOR Key command
+    xorky_parser = subparsers.add_parser('xorkey', help='Repeating Key XOR')
+    xorky_parser.add_argument('key', help='Key string')
+    xorky_parser.add_argument('data', help='Data (hex/base64/string)')
+
+    # Bacon command
+    bacon_parser = subparsers.add_parser('bacon', help='Bacon cipher')
+    bacon_parser.add_argument('mode', choices=['enc', 'dec'], help='Encode or Decode')
+    bacon_parser.add_argument('text', help='Text to process')
+
+    # Num command
+    num_parser = subparsers.add_parser('num', help='Number converter')
+    num_parser.add_argument('type', choices=['bin', 'dec', 'hex'], help='Input type')
+    num_parser.add_argument('text', help='Space separated numbers')
 
     # Help command
     subparsers.add_parser('help', help='Display help')
@@ -761,14 +1005,28 @@ def main():
         cmd_atbash(args)
     elif args.command == 'rot13':
         cmd_rot13(args)
-    elif args.command == 'strings':
-        cmd_strings(args)
-    elif args.command == 'stego':
-        cmd_stego(args)
     elif args.command == 'fileinfo':
         cmd_fileinfo(args)
     elif args.command == 'hexdump':
         cmd_hexdump(args)
+    elif args.command == 'morse':
+        cmd_morse(args)
+    elif args.command == 'freq':
+        cmd_freq(args)
+    elif args.command == 'railfence':
+        cmd_railfence(args)
+    elif args.command == 'rsa':
+        cmd_rsa(args)
+    elif args.command == 'math':
+        cmd_math(args)
+    elif args.command == 'affine':
+        cmd_affine(args)
+    elif args.command == 'xorkey':
+        cmd_xorkey(args)
+    elif args.command == 'bacon':
+        cmd_bacon(args)
+    elif args.command == 'num':
+        cmd_num(args)
     elif args.command == 'help' or not args.command:
         show_help()
     else:
