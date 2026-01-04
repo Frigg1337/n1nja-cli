@@ -33,6 +33,97 @@ logging.basicConfig(
 
 logger = logging.getLogger("n1nja")
 
+# ---------------- Styling ----------------
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    UNDERLINE = "\033[4m"
+    
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+    BG_RED = "\033[41m"
+    BG_GREEN = "\033[42m"
+    BG_BLUE = "\033[44m"
+
+class Console:
+    @staticmethod
+    def print_banner(text):
+        print(f"{Colors.BOLD}{Colors.CYAN}{text}{Colors.RESET}")
+
+    @staticmethod
+    def success(msg):
+        print(f"{Colors.GREEN}[+] {Colors.RESET}{msg}")
+
+    @staticmethod
+    def error(msg):
+        print(f"{Colors.RED}[-] {Colors.RESET}{msg}")
+
+    @staticmethod
+    def info(msg):
+        print(f"{Colors.BLUE}[*] {Colors.RESET}{msg}")
+
+    @staticmethod
+    def warning(msg):
+        print(f"{Colors.YELLOW}[!] {Colors.RESET}{msg}")
+
+    @staticmethod
+    def panel(title, content, color=Colors.CYAN):
+        """Draws a box/panel around content"""
+        lines = content.strip().split('\n')
+        width = max([len(line) for line in lines] + [len(title) + 4]) + 2
+        
+        # Top border
+        print(f"{color}╭{'─' * (width)}╮{Colors.RESET}")
+        print(f"{color}│{Colors.RESET} {Colors.BOLD}{title.center(width-2)}{Colors.RESET} {color}│{Colors.RESET}")
+        print(f"{color}├{'─' * (width)}┤{Colors.RESET}")
+        
+        # Content
+        for line in lines:
+            print(f"{color}│{Colors.RESET} {line.ljust(width-2)} {color}│{Colors.RESET}")
+            
+        # Bottom border
+        print(f"{color}╰{'─' * (width)}╯{Colors.RESET}")
+
+    @staticmethod
+    def table(headers, rows):
+        """Draws a simple ASCII table"""
+        if not rows:
+            return
+            
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                if i < len(col_widths):
+                    col_widths[i] = max(col_widths[i], len(str(cell)))
+        
+        # Top border
+        border = f"{Colors.DIM}+{Colors.RESET}"
+        header_row = f"{Colors.DIM}|{Colors.RESET}"
+        for w in col_widths:
+            border += f"{Colors.DIM}{'-' * (w + 2)}+{Colors.RESET}"
+        
+        print(border)
+        for i, h in enumerate(headers):
+            header_row += f" {Colors.BOLD}{h.center(col_widths[i])}{Colors.RESET} {Colors.DIM}|{Colors.RESET}"
+        print(header_row)
+        print(border)
+        
+        for row in rows:
+            line = f"{Colors.DIM}|{Colors.RESET}"
+            for i, cell in enumerate(row):
+                if i < len(col_widths):
+                    line += f" {str(cell).ljust(col_widths[i])} {Colors.DIM}|{Colors.RESET}"
+            print(line)
+        print(border)
+
+
 # ---------------- Load konfigurasi ----------------
 # load_dotenv() # Removed
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -552,7 +643,10 @@ def cmd_decode(args):
     else:
         out = "Unknown decode type."
 
-    print(out)
+    if str(out).startswith("Failed") or str(out).startswith("Unknown"):
+        Console.error(out)
+    else:
+        Console.success(out)
     save_history("cli_user", f"decode {d}", teks, out[:4000])
 
 def cmd_encode(args):
@@ -570,7 +664,10 @@ def cmd_encode(args):
     else:
         out = "Unknown encode type."
 
-    print(out)
+    if str(out).startswith("Unknown"):
+        Console.error(out)
+    else:
+        Console.success(out)
     save_history("cli_user", f"encode {d}", teks, out)
 
 def cmd_hashid(args):
@@ -580,7 +677,10 @@ def cmd_hashid(args):
     except Exception as e:
         out = "Error lookup hash: %s" % str(e)
 
-    print(out)
+    if str(out).startswith("Error"):
+        Console.error(out)
+    else:
+        Console.panel("Hash Identification", out)
     save_history("cli_user", "hashid", args.hashtext, out[:4000])
 
 def cmd_solve(args):
@@ -598,11 +698,24 @@ def cmd_solve(args):
             lines.append("[" + label + "]\n" + preview[:800])
             if flags:
                 lines.append("  >> flag detected: " + ", ".join(flags))
+        if not lines:
+            Console.warning("No decodes found or depth limit reached.")
+        else:
+            for line in lines[:30]:
+                # line format is: [label]\ncontent...
+                parts = line.split('\n', 1)
+                if len(parts) == 2:
+                    header = parts[0]
+                    body = parts[1]
+                    Console.panel(header.strip('[]'), body)
+                else:
+                    print(line)
+                    
         out = "\n\n".join(lines[:30])
-        print(out)
+        # print(out) # Suppressed effectively by loop above, but we keep 'out' for history
         save_history("cli_user", "solve", args.text, out[:4000])
     except Exception as e:
-        print("Error during solve: " + str(e))
+        Console.error("Error during solve: " + str(e))
 
 def cmd_xorbrute(args):
     """Function for brute-force single-byte XOR"""
@@ -614,26 +727,33 @@ def cmd_xorbrute(args):
             parsed = try_base64(args.data) or args.data.encode()
         res = single_xor_bruteforce(parsed, top=12)
         lines = []
+        rows = []
         for sc, k, outb in res:
             try:
                 pr = outb.decode("utf-8", errors="ignore")
             except Exception:
                 pr = outb.hex()
-            lines.append("k=0x%02x score=%d\n%s" % (k, sc, pr[:800]))
+            # Clean up preview for table
+            clean_pr = (pr[:60] + '..') if len(pr) > 60 else pr
+            clean_pr = clean_pr.replace('\n', ' ').replace('\r', '')
+            rows.append([f"0x{k:02x}", str(sc), clean_pr])
+            
+            lines.append("k=0x%02x score=%d\n%s" % (k, sc, pr[:800])) # Keep original for history/raw
+            
+        Console.table(["Key", "Score", "Preview"], rows)
         outt = "\n\n".join(lines)
-        print(outt)
         save_history("cli_user", "xorbrute", args.data, outt[:4000])
     except Exception as e:
-        print("XOR error: " + str(e))
+        Console.error("XOR error: " + str(e))
 
 def cmd_caesar(args):
     """Function for Caesar cipher"""
     try:
         out = caesar_shift(args.text, args.shift)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "caesar", str(args.shift) + "|" + args.text, out)
     except Exception as e:
-        print("Caesar error: " + str(e))
+        Console.error("Caesar error: " + str(e))
 
 def cmd_vigenere(args):
     """Function for Vigenere cipher"""
@@ -642,28 +762,28 @@ def cmd_vigenere(args):
             out = vigenere(args.text, args.key, decrypt=False)
         else:
             out = vigenere(args.text, args.key, decrypt=True)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "vigenere", args.mode + "|" + args.key + "|" + args.text, out[:4000])
     except Exception as e:
-        print("Vigenere error: " + str(e))
+        Console.error("Vigenere error: " + str(e))
 
 def cmd_atbash(args):
     """Function for Atbash cipher"""
     try:
         out = atbash(args.text)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "atbash", args.text, out)
     except Exception as e:
-        print("Atbash error: " + str(e))
+        Console.error("Atbash error: " + str(e))
 
 def cmd_rot13(args):
     """Function for ROT13"""
     try:
         out = codecs.decode(args.text, "rot_13")
-        print(out)
+        Console.success(out)
         save_history("cli_user", "rot13", args.text, out)
     except Exception as e:
-        print("ROT13 error: " + str(e))
+        Console.error("ROT13 error: " + str(e))
 
 # cmd_strings and cmd_stego removed to focus on Cryptography
 
@@ -683,10 +803,10 @@ def cmd_fileinfo(args):
         sha256_hash = hashlib.sha256(data).hexdigest()
 
         info = f"File name: {args.file}\nSize: {file_size} bytes\nMD5: {md5_hash}\nSHA1: {sha1_hash}\nSHA256: {sha256_hash}"
-        print(info)
+        Console.panel("File Information", info)
         save_history("cli_user", "fileinfo", args.file, info)
     except Exception as e:
-        print(f"Fileinfo error: {str(e)}")
+        Console.error(f"Fileinfo error: {str(e)}")
 
 def cmd_hexdump(args):
     """Function for hexdump"""
@@ -716,63 +836,83 @@ def cmd_morse(args):
             out = morse_encode(args.text)
         else:
             out = morse_decode(args.text)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "morse", args.mode + "|" + args.text, out)
     except Exception as e:
-        print(f"Morse error: {str(e)}")
+        Console.error(f"Morse error: {str(e)}")
 
 def cmd_freq(args):
     """Function for Frequency Analysis"""
     try:
         out = frequency_analysis(args.text)
-        print(out)
+        # Parse the output string back into rows for table display
+        lines = out.split('\n')
+        total_line = lines[0]
+        rows = []
+        for line in lines[1:]:
+            parts = line.split(': ')
+            if len(parts) == 2:
+                char = parts[0]
+                rest = parts[1]
+                # rest is like "2 (20.00%)"
+                count_str = rest.split(' ')[0]
+                percent_str = rest.split('(')[1].rstrip(')')
+                rows.append([char, count_str, percent_str])
+        
+        print(f"{Colors.BOLD}{Colors.CYAN}{total_line}{Colors.RESET}")
+        Console.table(["Char", "Count", "Percent"], rows)
         save_history("cli_user", "freq", args.text, out[:4000])
     except Exception as e:
-        print(f"Freq error: {str(e)}")
+        Console.error(f"Freq error: {str(e)}")
 
 def cmd_railfence(args):
     """Function for Rail Fence Cipher"""
     try:
         mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
         out = rail_fence_cipher(args.text, args.rails, mode)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "railfence", f"{mode}|{args.rails}|{args.text}", out)
     except Exception as e:
-        print(f"Railfence error: {str(e)}")
+        Console.error(f"Railfence error: {str(e)}")
 
 def cmd_rsa(args):
     """Function for RSA calc"""
     try:
         n, phi, d = rsa_calc(args.p, args.q, args.e)
-        print(f"p={args.p}, q={args.q}, e={args.e}")
-        print(f"n   = {n}")
-        print(f"phi = {phi}")
-        print(f"d   = {d} (Private Key)")
+        content = (
+            f"p   = {args.p}\n"
+            f"q   = {args.q}\n"
+            f"e   = {args.e}\n"
+            f"n   = {n}\n"
+            f"phi = {phi}\n"
+            f"d   = {d} (Private Key)"
+        )
+        Console.panel("RSA Calculation Result", content)
         save_history("cli_user", "rsa", f"{args.p}|{args.q}|{args.e}", f"d={d}")
     except Exception as e:
-        print(f"RSA error: {str(e)}")
+        Console.error(f"RSA error: {str(e)}")
 
 def cmd_math(args):
     """Function for math helpers"""
     try:
         if args.op == 'gcd':
             res = math.gcd(args.a, args.b)
-            print(f"GCD({args.a}, {args.b}) = {res}")
+            Console.success(f"GCD({args.a}, {args.b}) = {res}")
         elif args.op == 'modinv':
             res = modinv(args.a, args.b)
-            print(f"ModInv({args.a}, {args.b}) = {res}")
+            Console.success(f"ModInv({args.a}, {args.b}) = {res}")
     except Exception as e:
-        print(f"Math error: {str(e)}")
+        Console.error(f"Math error: {str(e)}")
 
 def cmd_affine(args):
     """Function for Affine cipher"""
     try:
         mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
         out = affine_cipher(args.text, args.a, args.b, mode)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "affine", f"{mode}|{args.a}|{args.b}|{args.text}", out)
     except Exception as e:
-        print(f"Affine error: {str(e)}")
+        Console.error(f"Affine error: {str(e)}")
 
 def cmd_xorkey(args):
     """Function for Repeating Key XOR"""
@@ -789,24 +929,24 @@ def cmd_xorkey(args):
         res = xor_repeating_key(data_bytes, key_bytes)
         
         # Display results in hex and string
-        print("Hex Output:")
+        Console.info("Hex Output:")
         print(res.hex())
-        print("\nString Preview:")
+        Console.info("String Preview:")
         print(res.decode('utf-8', errors='ignore'))
         
         save_history("cli_user", "xorkey", args.key, res.hex())
     except Exception as e:
-        print(f"XORKey error: {str(e)}")
+        Console.error(f"XORKey error: {str(e)}")
 
 def cmd_bacon(args):
     """Function for Bacon cipher"""
     try:
         mode = 'enc' if args.mode in ('enc', 'encrypt') else 'dec'
         out = bacon_cipher(args.text, mode)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "bacon", f"{mode}|{args.text}", out)
     except Exception as e:
-        print(f"Bacon error: {str(e)}")
+        Console.error(f"Bacon error: {str(e)}")
 
 def cmd_num(args):
     """Function for Number conversion"""
@@ -817,52 +957,81 @@ def cmd_num(args):
             out = nums_to_ascii(args.text, 10)
         elif args.type == 'hex':
             out = nums_to_ascii(args.text, 16)
-        print(out)
+        Console.success(out)
         save_history("cli_user", "num", f"{args.type}|{args.text}", out)
     except Exception as e:
-        print(f"Num error: {str(e)}")
+        Console.error(f"Num error: {str(e)}")
 
 def show_help():
     """Display CLI help"""
-    help_text = (
-        "Available Commands:\n"
-        "===================\n\n"
-        "[!] Encodings & Conversions\n"
-        "  decode    : Decode (base64, hex, base32, rot13, atbash)\n"
-        "  encode    : Encode (base64, hex, url)\n"
-        "  num       : Convert numbers to ASCII (bin, dec, hex)\n\n"
-        "[!] Classic Ciphers\n"
-        "  caesar    : Caesar Cipher (shift)\n"
-        "  rot13     : ROT13 Cipher (caesar 13)\n"
-        "  atbash    : Atbash Cipher (mirror)\n"
-        "  affine    : Affine Cipher (ax + b)\n"
-        "  vigenere  : Vigenere Cipher (polyalphabetic)\n"
-        "  railfence : Rail Fence Cipher (zigzag)\n"
-        "  bacon     : Bacon Cipher (stego text)\n"
-        "  morse     : Morse Code\n\n"
-        "[!] Modern Crypto & Math\n"
-        "  rsa       : RSA Calculator (p, q, e -> d)\n"
-        "  xorkey    : Repeating Key XOR\n"
-        "  xorbrute  : Single Byte XOR Bruteforce\n"
-        "  math      : Math Helpers (gcd, modinv)\n\n"
-        "[!] Analysis & Identifiers\n"
-        "  solve     : Auto-Solver (Recursive decode & flag detection)\n"
-        "  hashid    : Identify hash type\n"
-        "  freq      : Frequency Analysis\n"
-        "  fileinfo  : File Hash & Size Info\n"
-        "  hexdump   : Hexdump View\n\n"
-        "Usage Examples:\n"
-        "  n1nja solve \"SGVsbG8...\"\n"
-        "  n1nja rsa 61 53 17\n"
-        "  n1nja xorkey SECRET 120412...\n"
-        "  n1nja caesar 13 \"URYYB\"\n"
-        "  n1nja num dec \"104 101 108 108 111\"\n"
-    )
-    print(help_text)
+    # Custom colored help
+    print(f"{Colors.BOLD}{Colors.MAGENTA}Available Commands:{Colors.RESET}")
+    print(f"{Colors.MAGENTA}{'='*19}{Colors.RESET}\n")
+
+    sections = [
+        (
+            f"{Colors.YELLOW}[!] Encodings & Conversions{Colors.RESET}",
+            [
+                ("decode", "Decode (base64, hex, base32, rot13, atbash)"),
+                ("encode", "Encode (base64, hex, url)"),
+                ("num   ", "Convert numbers to ASCII (bin, dec, hex)")
+            ]
+        ),
+        (
+            f"{Colors.YELLOW}[!] Classic Ciphers{Colors.RESET}",
+            [
+                ("caesar   ", "Caesar Cipher (shift)"),
+                ("rot13    ", "ROT13 Cipher (caesar 13)"),
+                ("atbash   ", "Atbash Cipher (mirror)"),
+                ("affine   ", "Affine Cipher (ax + b)"),
+                ("vigenere ", "Vigenere Cipher (polyalphabetic)"),
+                ("railfence", "Rail Fence Cipher (zigzag)"),
+                ("bacon    ", "Bacon Cipher (stego text)"),
+                ("morse    ", "Morse Code")
+            ]
+        ),
+        (
+            f"{Colors.YELLOW}[!] Modern Crypto & Math{Colors.RESET}",
+            [
+                ("rsa      ", "RSA Calculator (p, q, e -> d)"),
+                ("xorkey   ", "Repeating Key XOR"),
+                ("xorbrute ", "Single Byte XOR Bruteforce"),
+                ("math     ", "Math Helpers (gcd, modinv)")
+            ]
+        ),
+        (
+            f"{Colors.YELLOW}[!] Analysis & Identifiers{Colors.RESET}",
+            [
+                ("solve    ", "Auto-Solver (Recursive decode & flag detection)"),
+                ("hashid   ", "Identify hash type"),
+                ("freq     ", "Frequency Analysis"),
+                ("fileinfo ", "File Hash & Size Info"),
+                ("hexdump  ", "Hexdump View")
+            ]
+        )
+    ]
+
+    for title, cmds in sections:
+        print(title)
+        for cmd, desc in cmds:
+            print(f"  {Colors.GREEN}{cmd:<10}{Colors.RESET} : {desc}")
+        print("")
+
+    print(f"{Colors.BOLD}Usage Examples:{Colors.RESET}")
+    examples = [
+        'n1nja solve "SGVsbG8..."',
+        'n1nja rsa 61 53 17',
+        'n1nja xorkey SECRET 120412...',
+        'n1nja caesar 13 "URYYB"',
+        'n1nja num dec "104 101 108 108 111"'
+    ]
+    for ex in examples:
+        print(f"  {Colors.CYAN}{ex}{Colors.RESET}")
+    print("")
 
 def main():
     # Print ASCII art when the program starts
-    print(r"""
+    Console.print_banner(r"""
           _
        /' \            __
   ___ /\_, \    ___   /\_\     __
